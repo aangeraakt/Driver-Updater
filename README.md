@@ -14,7 +14,7 @@ Een Windows desktop-app om hardware te scannen, beschikbare driver-updates te vi
 Clone de repository en bouw het project:
 
 ```powershell
-git clone https://github.com/<jouw-gebruikersnaam>/Driver-Updater.git
+git clone https://github.com/Aangeraakt/Driver-Updater.git
 cd "Driver Updater"
 cargo run --release
 ```
