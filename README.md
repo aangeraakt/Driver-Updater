@@ -5,16 +5,49 @@ Een Windows desktop-app om hardware te scannen, beschikbare driver-updates te vi
 ## Vereisten
 
 - **Windows 10/11** (de app gebruikt WMI en de Windows Update API)
-- [Rust](https://rustup.rs/) (edition 2021)
+- **Rust** (edition 2021) — zie [Rust installeren](#rust-installeren)
 - Internetverbinding voor het ophalen van updates
 - **Administratorrechten** (aanbevolen bij installatie; sommige driver-updates vereisen dit)
+
+## Rust installeren
+
+Rust wordt geïnstalleerd via [rustup](https://rustup.rs/), de officiële toolchain-manager.
+
+### Stap 1: Visual Studio Build Tools (Windows)
+
+Dit project compileert tegen de MSVC-toolchain. Installeer de C++ build tools als je die nog niet hebt:
+
+1. Download [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+2. Kies tijdens installatie de workload **Desktop development with C++**
+3. Zorg dat **MSVC** en **Windows SDK** aangevinkt staan
+
+### Stap 2: rustup installeren
+
+Download en voer [rustup-init.exe](https://win.rustup.rs/x86_64) uit, of installeer vanuit PowerShell:
+
+```powershell
+winget install Rustlang.Rustup
+```
+
+Volg de prompts in de installer. De standaardoptie (`stable`, `msvc`) is correct voor dit project.
+
+Open daarna een **nieuw** PowerShell- of terminalvenster zodat `PATH` wordt ververst.
+
+### Stap 3: Installatie controleren
+
+```powershell
+rustc --version
+cargo --version
+```
+
+Je zou iets moeten zien als `rustc 1.xx.x` en `cargo 1.xx.x`. Als beide commando's werken, kun je verder met [Installatie en starten](#installatie-en-starten).
 
 ## Installatie en starten
 
 Clone de repository en bouw het project:
 
 ```powershell
-git clone https://github.com/<jouw-gebruikersnaam>/Driver-Updater.git
+git clone https://github.com/Aangeraakt/Driver-Updater.git
 cd "Driver Updater"
 cargo run --release
 ```
