@@ -53,6 +53,7 @@ pub struct DeviceDriver {
     pub inf_name: String,
     pub status: DeviceStatus,
     pub update_title: Option<String>,
+    pub update_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +143,7 @@ pub fn scan_devices() -> Result<Vec<DeviceDriver>> {
             inf_name: String::new(),
             status: DeviceStatus::Unknown,
             update_title: None,
+            update_id: None,
         });
     }
 
@@ -194,6 +196,7 @@ fn build_device(d: PnPSignedDriver, entities: &HashMap<String, PnPEntity>) -> Op
         inf_name: d.inf_name.unwrap_or_default(),
         status: DeviceStatus::Unknown,
         update_title: None,
+        update_id: None,
     })
 }
 

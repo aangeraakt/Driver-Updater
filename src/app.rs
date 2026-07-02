@@ -1,9 +1,11 @@
 use crate::hardware::{class_display_name, scan_devices, DeviceDriver, DeviceStatus};
 use crate::updater::{
-    format_size, install_all_driver_updates, is_elevated, match_updates_to_devices,
-    request_elevation, result_code_label, search_driver_updates, DriverUpdate, InstallProgress,
+    format_size, install_driver_updates, is_elevated, is_install_success, match_updates_to_devices,
+    request_elevation, restart_computer, result_code_label, search_driver_updates, DriverUpdate,
+    InstallSummary,
 };
 use eframe::egui;
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -20,7 +22,7 @@ enum AppPhase {
 enum WorkerMsg {
     ScanDone(Result<Vec<DeviceDriver>, String>),
     CheckDone(Result<Vec<DriverUpdate>, String>),
-    InstallDone(Result<Vec<InstallProgress>, String>),
+    InstallDone(Result<InstallSummary, String>),
 }
 
 pub struct DriverUpdaterApp {
@@ -33,6 +35,7 @@ pub struct DriverUpdaterApp {
     error_message: Option<String>,
     install_log: Vec<String>,
     confirm_install: bool,
+    show_restart_prompt: bool,
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
     elevated: bool,
@@ -51,6 +54,7 @@ impl DriverUpdaterApp {
             error_message: None,
             install_log: Vec::new(),
             confirm_install: false,
+            show_restart_prompt: false,
             tx,
             rx,
             elevated: is_elevated(),
@@ -76,7 +80,8 @@ impl DriverUpdaterApp {
                         self.updates = updates.clone();
                         match_updates_to_devices(&mut self.devices, &updates);
                         self.phase = AppPhase::Ready;
-                        self.status_message = if updates.is_empty() {
+                        let installable = self.installable_updates_count();
+                        self.status_message = if installable == 0 {
                             format!(
                                 "{} onderdelen gescand — alle drivers zijn up-to-date.",
                                 self.devices.len()
@@ -85,7 +90,7 @@ impl DriverUpdaterApp {
                             format!(
                                 "{} onderdelen gescand — {} driver update(s) beschikbaar.",
                                 self.devices.len(),
-                                updates.len()
+                                installable
                             )
                         };
                     }
@@ -99,9 +104,10 @@ impl DriverUpdaterApp {
                     }
                 },
                 WorkerMsg::InstallDone(result) => match result {
-                    Ok(results) => {
+                    Ok(summary) => {
                         self.install_log.clear();
-                        for r in &results {
+                        let mut successful_titles = HashSet::new();
+                        for r in &summary.results {
                             self.install_log.push(format!(
                                 "[{}/{}] {} — {}",
                                 r.current,
@@ -109,18 +115,43 @@ impl DriverUpdaterApp {
                                 r.title,
                                 result_code_label(r.result_code)
                             ));
+                            if is_install_success(r.result_code) {
+                                successful_titles.insert(r.title.clone());
+                            }
                         }
+
                         for device in &mut self.devices {
-                            if device.status == DeviceStatus::UpdateAvailable {
+                            if device.status != DeviceStatus::UpdateAvailable {
+                                continue;
+                            }
+                            let Some(title) = &device.update_title else {
+                                continue;
+                            };
+                            if successful_titles.contains(title) {
                                 device.status = DeviceStatus::Installed;
                             }
                         }
+
+                        let success_count = summary
+                            .results
+                            .iter()
+                            .filter(|r| is_install_success(r.result_code))
+                            .count();
+
                         self.phase = AppPhase::Done;
-                        self.status_message = if results.is_empty() {
+                        self.status_message = if success_count == 0 {
                             "Geen updates geïnstalleerd.".into()
                         } else {
-                            format!("{} driver(s) geïnstalleerd.", results.len())
+                            format!("{success_count} driver(s) geïnstalleerd.")
                         };
+
+                        let needs_restart = summary.reboot_required
+                            || summary
+                                .results
+                                .iter()
+                                .any(|r| matches!(r.result_code, 3 | 4))
+                            || success_count > 0;
+                        self.show_restart_prompt = needs_restart;
                     }
                     Err(e) => {
                         self.phase = AppPhase::Ready;
@@ -137,6 +168,7 @@ impl DriverUpdaterApp {
         self.error_message = None;
         self.status_message = "Hardware scannen...".into();
         self.install_log.clear();
+        self.show_restart_prompt = false;
 
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -160,12 +192,38 @@ impl DriverUpdaterApp {
         self.phase = AppPhase::Installing;
         self.status_message = "Drivers installeren...".into();
         self.confirm_install = false;
+        self.show_restart_prompt = false;
 
+        let update_ids = self.installable_update_ids();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = install_all_driver_updates().map_err(|e| e.to_string());
+            let result = install_driver_updates(&update_ids).map_err(|e| e.to_string());
             let _ = tx.send(WorkerMsg::InstallDone(result));
         });
+    }
+
+    fn installable_update_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut seen = HashSet::new();
+        for device in &self.devices {
+            if device.status != DeviceStatus::UpdateAvailable {
+                continue;
+            }
+            if let Some(id) = &device.update_id {
+                if seen.insert(id.clone()) {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        ids
+    }
+
+    fn installable_updates(&self) -> Vec<&DriverUpdate> {
+        let ids = self.installable_update_ids();
+        self.updates
+            .iter()
+            .filter(|u| ids.contains(&u.update_id))
+            .collect()
     }
 
     fn filtered_devices(&self) -> Vec<&DeviceDriver> {
@@ -186,8 +244,8 @@ impl DriverUpdaterApp {
             .collect()
     }
 
-    fn updates_count(&self) -> usize {
-        self.updates.len()
+    fn installable_updates_count(&self) -> usize {
+        self.installable_update_ids().len()
     }
 
     fn is_busy(&self) -> bool {
@@ -225,7 +283,7 @@ impl DriverUpdaterApp {
                 self.start_scan();
             }
 
-            let updates = self.updates_count();
+            let updates = self.installable_updates_count();
             if ui
                 .add_enabled(
                     !self.is_busy() && updates > 0,
@@ -303,18 +361,19 @@ impl DriverUpdaterApp {
     }
 
     fn render_updates_panel(&mut self, ui: &mut egui::Ui) {
-        if self.updates.is_empty() {
+        let installable = self.installable_updates();
+        if installable.is_empty() {
             return;
         }
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new("Beschikbare updates via Windows Update")
+            egui::RichText::new("Beschikbare updates voor jouw hardware")
                 .strong(),
         );
         egui::ScrollArea::vertical()
             .max_height(120.0)
             .show(ui, |ui| {
-                for update in &self.updates {
+                for update in installable {
                     ui.horizontal(|ui| {
                         ui.label(&update.title);
                         ui.label(format_size(update.size_bytes));
@@ -346,15 +405,15 @@ impl DriverUpdaterApp {
             .show(ctx, |ui| {
                 ui.label(format!(
                     "Wil je {} driver update(s) installeren via Windows Update?",
-                    self.updates_count()
+                    self.installable_updates_count()
                 ));
                 ui.label(
-                    "Dit kan enkele minuten duren. Een herstart kan nodig zijn na installatie.",
+                    "Dit kan enkele minuten duren. Na installatie moet je je PC herstarten om de drivers te activeren.",
                 );
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Ja, installeer alle driver updates").clicked() {
+                    if ui.button("Ja, installeer driver updates").clicked() {
                         self.confirm_install = false;
                         if !self.elevated {
                             let _ = request_elevation();
@@ -364,6 +423,48 @@ impl DriverUpdaterApp {
                     }
                     if ui.button("Annuleren").clicked() {
                         self.confirm_install = false;
+                    }
+                });
+            });
+    }
+
+    fn render_restart_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_restart_prompt {
+            return;
+        }
+
+        egui::Window::new("Herstart vereist")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    "De driver(s) zijn gedownload en geïnstalleerd, maar worden pas actief na een herstart van je PC.",
+                );
+                ui.label(
+                    "Start je computer opnieuw op om de nieuwe drivers te gebruiken.",
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(
+                            egui::Button::new("Herstart nu")
+                                .fill(egui::Color32::from_rgb(40, 120, 200)),
+                        )
+                        .clicked()
+                    {
+                        self.show_restart_prompt = false;
+                        if !self.elevated {
+                            let _ = request_elevation();
+                            self.elevated = is_elevated();
+                        }
+                        if let Err(e) = restart_computer() {
+                            self.error_message = Some(e.to_string());
+                        }
+                    }
+                    if ui.button("Later").clicked() {
+                        self.show_restart_prompt = false;
                     }
                 });
             });
@@ -396,6 +497,7 @@ impl eframe::App for DriverUpdaterApp {
         });
 
         self.render_confirm_dialog(ctx);
+        self.render_restart_dialog(ctx);
 
         if self.is_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
