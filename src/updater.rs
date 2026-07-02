@@ -1,17 +1,21 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::Deserializer;
+use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
+const WU_DRIVER_QUERY: &str = "IsInstalled=0 and Type='Driver' and IsHidden=0";
+
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct DriverUpdate {
     #[serde(rename = "update_id")]
     pub update_id: String,
     pub title: String,
-    #[serde(rename = "description")]
-    description: String,
     pub size_bytes: u64,
+    #[serde(skip)]
+    pub title_lower: String,
+    #[serde(skip)]
+    pub title_upper: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,36 +90,27 @@ pub fn request_elevation() -> Result<()> {
 }
 
 pub fn search_driver_updates() -> Result<Vec<DriverUpdate>> {
-    let script = r#"
+    let script = format!(
+        r#"
 $ErrorActionPreference = 'Stop'
 $Session = New-Object -ComObject Microsoft.Update.Session
 $Searcher = $Session.CreateUpdateSearcher()
 $Searcher.Online = $true
-$Result = $Searcher.Search("IsInstalled=0 and Type='Driver' and IsHidden=0")
+$Result = $Searcher.Search('{WU_DRIVER_QUERY}')
 $updates = @()
-foreach ($Update in $Result.Updates) {
-    $updates += [PSCustomObject]@{
+foreach ($Update in $Result.Updates) {{
+    $updates += [PSCustomObject]@{{
         update_id = $Update.Identity.UpdateID
         title = $Update.Title
-        description = if ($Update.Description) { $Update.Description } else { '' }
         size_bytes = [uint64]$Update.MaxDownloadSize
-    }
-}
+    }}
+}}
 $updates | ConvertTo-Json -Compress -Depth 3
-"#;
+"#
+    );
 
-    let json = run_powershell(script)?;
-    if json.trim().is_empty() || json.trim() == "null" {
-        return Ok(vec![]);
-    }
-
-    let updates: Vec<DriverUpdate> = if json.trim().starts_with('[') {
-        serde_json::from_str(&json).context("Kon update JSON niet parsen")?
-    } else {
-        vec![serde_json::from_str(&json).context("Kon update JSON niet parsen")?]
-    };
-
-    Ok(updates)
+    let json = run_powershell(&script)?;
+    parse_driver_updates(&json)
 }
 
 pub fn install_driver_updates(update_ids: &[String]) -> Result<InstallSummary> {
@@ -131,13 +126,15 @@ pub fn install_driver_updates(update_ids: &[String]) -> Result<InstallSummary> {
         r#"
 $ErrorActionPreference = 'Stop'
 $TargetIds = ConvertFrom-Json '{ids_json}'
+$TargetSet = @{{}}
+foreach ($id in $TargetIds) {{ $TargetSet[$id] = $true }}
 $Session = New-Object -ComObject Microsoft.Update.Session
 $Searcher = $Session.CreateUpdateSearcher()
 $Searcher.Online = $true
-$Result = $Searcher.Search("IsInstalled=0 and Type='Driver' and IsHidden=0")
+$Result = $Searcher.Search('{WU_DRIVER_QUERY}')
 $ToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
 foreach ($Update in $Result.Updates) {{
-    if ($TargetIds -contains $Update.Identity.UpdateID) {{
+    if ($TargetSet.ContainsKey($Update.Identity.UpdateID)) {{
         [void]$ToInstall.Add($Update)
     }}
 }}
@@ -165,6 +162,26 @@ for ($i = 0; $i -lt $ToInstall.Count; $i++) {{
     parse_install_summary(&json)
 }
 
+fn parse_driver_updates(json: &str) -> Result<Vec<DriverUpdate>> {
+    let trimmed = json.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(vec![]);
+    }
+
+    let mut updates: Vec<DriverUpdate> = if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed).context("Kon update JSON niet parsen")?
+    } else {
+        vec![serde_json::from_str(trimmed).context("Kon update JSON niet parsen")?]
+    };
+
+    for update in &mut updates {
+        update.title_lower = update.title.to_lowercase();
+        update.title_upper = update.title.to_uppercase();
+    }
+
+    Ok(updates)
+}
+
 fn parse_install_summary(json: &str) -> Result<InstallSummary> {
     let trimmed = json.trim();
     if trimmed.is_empty() {
@@ -174,8 +191,8 @@ fn parse_install_summary(json: &str) -> Result<InstallSummary> {
         });
     }
 
-    let parsed: InstallSummaryJson = serde_json::from_str(trimmed)
-        .context("Kon installatie resultaat niet parsen")?;
+    let parsed: InstallSummaryJson =
+        serde_json::from_str(trimmed).context("Kon installatie resultaat niet parsen")?;
     Ok(InstallSummary {
         results: parsed.results,
         reboot_required: parsed.reboot_required,
@@ -205,7 +222,9 @@ fn run_powershell(script: &str) -> Result<String> {
 pub fn match_updates_to_devices(
     devices: &mut [crate::hardware::DeviceDriver],
     updates: &[DriverUpdate],
-) {
+) -> HashSet<String> {
+    let mut installable_ids = HashSet::new();
+
     for device in devices.iter_mut() {
         device.status = crate::hardware::DeviceStatus::UpToDate;
         device.update_title = None;
@@ -215,50 +234,45 @@ pub fn match_updates_to_devices(
             device.status = crate::hardware::DeviceStatus::UpdateAvailable;
             device.update_title = Some(update.title.clone());
             device.update_id = Some(update.update_id.clone());
+            installable_ids.insert(update.update_id.clone());
         }
     }
+
+    installable_ids
 }
 
 fn find_best_match<'a>(
     device: &crate::hardware::DeviceDriver,
     updates: &'a [DriverUpdate],
 ) -> Option<&'a DriverUpdate> {
-    updates
-        .iter()
-        .filter(|u| matches_device(device, u))
-        .max_by_key(|u| score_match(device, u))
-        .filter(|u| score_match(device, u) > 0)
-}
+    let mut best: Option<(&'a DriverUpdate, usize)> = None;
 
-fn matches_device(device: &crate::hardware::DeviceDriver, update: &DriverUpdate) -> bool {
-    let t = update.title.to_lowercase();
-    let name = device.name.to_lowercase();
-    if t.contains(&name) {
-        return true;
+    for update in updates {
+        let score = score_match(device, update);
+        if score > 0 && best.map_or(true, |(_, best_score)| score > best_score) {
+            best = Some((update, score));
+        }
     }
-    if !device.manufacturer.is_empty() && t.contains(&device.manufacturer.to_lowercase()) {
-        return true;
-    }
-    device.hardware_ids.iter().any(|id| {
-        let id_upper = id.to_uppercase();
-        t.to_uppercase().contains(&id_upper)
-    })
+
+    best.map(|(update, _)| update)
 }
 
 fn score_match(device: &crate::hardware::DeviceDriver, update: &DriverUpdate) -> usize {
-    let t = update.title.to_lowercase();
+    let t = &update.title_lower;
     let mut score = 0;
-    if t.contains(&device.name.to_lowercase()) {
+
+    if t.contains(&device.name_lower) {
         score += 10;
     }
-    if !device.manufacturer.is_empty() && t.contains(&device.manufacturer.to_lowercase()) {
+    if !device.manufacturer_lower.is_empty() && t.contains(&device.manufacturer_lower) {
         score += 5;
     }
-    for id in &device.hardware_ids {
-        if t.contains(&id.to_lowercase()) {
+    for id in &device.hardware_ids_upper {
+        if update.title_upper.contains(id) {
             score += 20;
         }
     }
+
     score
 }
 
