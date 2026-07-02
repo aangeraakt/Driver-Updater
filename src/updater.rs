@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde::de::Deserializer;
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct DriverUpdate {
     #[serde(rename = "update_id")]
-    update_id: String,
+    pub update_id: String,
     pub title: String,
     #[serde(rename = "description")]
     description: String,
@@ -19,6 +20,37 @@ pub struct InstallProgress {
     pub total: u32,
     pub title: String,
     pub result_code: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallSummary {
+    pub results: Vec<InstallProgress>,
+    pub reboot_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstallSummaryJson {
+    reboot_required: bool,
+    #[serde(default, deserialize_with = "deserialize_install_results")]
+    results: Vec<InstallProgress>,
+}
+
+fn deserialize_install_results<'de, D>(deserializer: D) -> Result<Vec<InstallProgress>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(InstallProgress),
+        Many(Vec<InstallProgress>),
+    }
+
+    match Option::<OneOrMany>::deserialize(deserializer)? {
+        Some(OneOrMany::One(item)) => Ok(vec![item]),
+        Some(OneOrMany::Many(items)) => Ok(items),
+        None => Ok(vec![]),
+    }
 }
 
 pub fn is_elevated() -> bool {
@@ -86,46 +118,68 @@ $updates | ConvertTo-Json -Compress -Depth 3
     Ok(updates)
 }
 
-pub fn install_all_driver_updates() -> Result<Vec<InstallProgress>> {
-    let script = r#"
+pub fn install_driver_updates(update_ids: &[String]) -> Result<InstallSummary> {
+    if update_ids.is_empty() {
+        return Ok(InstallSummary {
+            results: vec![],
+            reboot_required: false,
+        });
+    }
+
+    let ids_json = serde_json::to_string(update_ids).context("Kon update IDs niet serialiseren")?;
+    let script = format!(
+        r#"
 $ErrorActionPreference = 'Stop'
+$TargetIds = ConvertFrom-Json '{ids_json}'
 $Session = New-Object -ComObject Microsoft.Update.Session
 $Searcher = $Session.CreateUpdateSearcher()
+$Searcher.Online = $true
 $Result = $Searcher.Search("IsInstalled=0 and Type='Driver' and IsHidden=0")
 $ToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
-foreach ($Update in $Result.Updates) {
-    if (-not $Update.IsInstalled) { [void]$ToInstall.Add($Update) }
-}
-if ($ToInstall.Count -eq 0) { '[]'; exit 0 }
+foreach ($Update in $Result.Updates) {{
+    if ($TargetIds -contains $Update.Identity.UpdateID) {{
+        [void]$ToInstall.Add($Update)
+    }}
+}}
+if ($ToInstall.Count -eq 0) {{
+    @{{ reboot_required = $false; results = @() }} | ConvertTo-Json -Compress -Depth 4
+    exit 0
+}}
 $Installer = $Session.CreateUpdateInstaller()
 $Installer.Updates = $ToInstall
 $InstallResult = $Installer.Install()
 $results = @()
-for ($i = 0; $i -lt $ToInstall.Count; $i++) {
-    $results += [PSCustomObject]@{
+for ($i = 0; $i -lt $ToInstall.Count; $i++) {{
+    $results += [PSCustomObject]@{{
         current = $i + 1
         total = $ToInstall.Count
         title = $ToInstall.Item($i).Title
         result_code = $InstallResult.GetUpdateResult($i).ResultCode
-    }
-}
-$results | ConvertTo-Json -Compress
-"#;
+    }}
+}}
+@{{ reboot_required = $InstallResult.RebootRequired; results = $results }} | ConvertTo-Json -Compress -Depth 4
+"#
+    );
 
-    let json = run_powershell(script)?;
-    parse_install_results(&json)
+    let json = run_powershell(&script)?;
+    parse_install_summary(&json)
 }
 
-fn parse_install_results(json: &str) -> Result<Vec<InstallProgress>> {
+fn parse_install_summary(json: &str) -> Result<InstallSummary> {
     let trimmed = json.trim();
-    if trimmed.is_empty() || trimmed == "[]" {
-        return Ok(vec![]);
+    if trimmed.is_empty() {
+        return Ok(InstallSummary {
+            results: vec![],
+            reboot_required: false,
+        });
     }
-    if trimmed.starts_with('[') {
-        Ok(serde_json::from_str(trimmed)?)
-    } else {
-        Ok(vec![serde_json::from_str(trimmed)?])
-    }
+
+    let parsed: InstallSummaryJson = serde_json::from_str(trimmed)
+        .context("Kon installatie resultaat niet parsen")?;
+    Ok(InstallSummary {
+        results: parsed.results,
+        reboot_required: parsed.reboot_required,
+    })
 }
 
 fn run_powershell(script: &str) -> Result<String> {
@@ -155,10 +209,12 @@ pub fn match_updates_to_devices(
     for device in devices.iter_mut() {
         device.status = crate::hardware::DeviceStatus::UpToDate;
         device.update_title = None;
+        device.update_id = None;
 
         if let Some(update) = find_best_match(device, updates) {
             device.status = crate::hardware::DeviceStatus::UpdateAvailable;
             device.update_title = Some(update.title.clone());
+            device.update_id = Some(update.update_id.clone());
         }
     }
 }
@@ -216,6 +272,18 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+pub fn is_install_success(code: i32) -> bool {
+    matches!(code, 2 | 3 | 4)
+}
+
+pub fn restart_computer() -> Result<()> {
+    Command::new("shutdown")
+        .args(["/r", "/t", "0"])
+        .spawn()
+        .context("Kon herstart niet starten")?;
+    Ok(())
 }
 
 pub fn result_code_label(code: i32) -> &'static str {
