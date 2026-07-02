@@ -29,7 +29,11 @@ pub struct DriverUpdaterApp {
     phase: AppPhase,
     devices: Vec<DeviceDriver>,
     updates: Vec<DriverUpdate>,
+    installable_ids: HashSet<String>,
+    installable_count: usize,
     filter: String,
+    filter_lower: String,
+    filter_snapshot: String,
     show_only_updates: bool,
     status_message: String,
     error_message: Option<String>,
@@ -48,7 +52,11 @@ impl DriverUpdaterApp {
             phase: AppPhase::Idle,
             devices: Vec::new(),
             updates: Vec::new(),
+            installable_ids: HashSet::new(),
+            installable_count: 0,
             filter: String::new(),
+            filter_lower: String::new(),
+            filter_snapshot: String::new(),
             show_only_updates: false,
             status_message: "Klik op 'Scannen' om je PC te analyseren.".into(),
             error_message: None,
@@ -61,13 +69,34 @@ impl DriverUpdaterApp {
         }
     }
 
-    fn poll_worker(&mut self) {
+    fn sync_filter_cache(&mut self) {
+        if self.filter != self.filter_snapshot {
+            self.filter_snapshot.clone_from(&self.filter);
+            self.filter_lower = self.filter.to_lowercase();
+        }
+    }
+
+    fn device_visible(&self, device: &DeviceDriver) -> bool {
+        if self.show_only_updates && device.status != DeviceStatus::UpdateAvailable {
+            return false;
+        }
+        if self.filter_lower.is_empty() {
+            return true;
+        }
+        device.name_lower.contains(&self.filter_lower)
+            || device.manufacturer_lower.contains(&self.filter_lower)
+            || device.class_lower.contains(&self.filter_lower)
+    }
+
+    fn poll_worker(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 WorkerMsg::ScanDone(result) => match result {
                     Ok(devices) => {
                         self.devices = devices;
-                        self.start_check();
+                        self.installable_ids.clear();
+                        self.installable_count = 0;
+                        self.start_check(ctx);
                     }
                     Err(e) => {
                         self.phase = AppPhase::Idle;
@@ -77,11 +106,11 @@ impl DriverUpdaterApp {
                 },
                 WorkerMsg::CheckDone(result) => match result {
                     Ok(updates) => {
-                        self.updates = updates.clone();
-                        match_updates_to_devices(&mut self.devices, &updates);
+                        self.installable_ids = match_updates_to_devices(&mut self.devices, &updates);
+                        self.installable_count = self.installable_ids.len();
+                        self.updates = updates;
                         self.phase = AppPhase::Ready;
-                        let installable = self.installable_updates_count();
-                        self.status_message = if installable == 0 {
+                        self.status_message = if self.installable_count == 0 {
                             format!(
                                 "{} onderdelen gescand — alle drivers zijn up-to-date.",
                                 self.devices.len()
@@ -90,7 +119,7 @@ impl DriverUpdaterApp {
                             format!(
                                 "{} onderdelen gescand — {} driver update(s) beschikbaar.",
                                 self.devices.len(),
-                                installable
+                                self.installable_count
                             )
                         };
                     }
@@ -106,7 +135,9 @@ impl DriverUpdaterApp {
                 WorkerMsg::InstallDone(result) => match result {
                     Ok(summary) => {
                         self.install_log.clear();
-                        let mut successful_titles = HashSet::new();
+                        let mut successful_titles = HashSet::with_capacity(summary.results.len());
+                        let mut success_count = 0;
+
                         for r in &summary.results {
                             self.install_log.push(format!(
                                 "[{}/{}] {} — {}",
@@ -117,6 +148,7 @@ impl DriverUpdaterApp {
                             ));
                             if is_install_success(r.result_code) {
                                 successful_titles.insert(r.title.clone());
+                                success_count += 1;
                             }
                         }
 
@@ -131,12 +163,6 @@ impl DriverUpdaterApp {
                                 device.status = DeviceStatus::Installed;
                             }
                         }
-
-                        let success_count = summary
-                            .results
-                            .iter()
-                            .filter(|r| is_install_success(r.result_code))
-                            .count();
 
                         self.phase = AppPhase::Done;
                         self.status_message = if success_count == 0 {
@@ -160,92 +186,56 @@ impl DriverUpdaterApp {
                     }
                 },
             }
+            ctx.request_repaint();
         }
     }
 
-    fn start_scan(&mut self) {
+    fn start_scan(&mut self, ctx: &egui::Context) {
         self.phase = AppPhase::Scanning;
         self.error_message = None;
         self.status_message = "Hardware scannen...".into();
         self.install_log.clear();
         self.show_restart_prompt = false;
+        self.updates.clear();
+        self.installable_ids.clear();
+        self.installable_count = 0;
 
         let tx = self.tx.clone();
+        let ctx = ctx.clone();
         thread::spawn(move || {
             let result = scan_devices().map_err(|e| e.to_string());
             let _ = tx.send(WorkerMsg::ScanDone(result));
+            ctx.request_repaint();
         });
     }
 
-    fn start_check(&mut self) {
+    fn start_check(&mut self, ctx: &egui::Context) {
         self.phase = AppPhase::Checking;
         self.status_message = "Drivers controleren via Windows Update...".into();
 
         let tx = self.tx.clone();
+        let ctx = ctx.clone();
         thread::spawn(move || {
             let result = search_driver_updates().map_err(|e| e.to_string());
             let _ = tx.send(WorkerMsg::CheckDone(result));
+            ctx.request_repaint();
         });
     }
 
-    fn start_install(&mut self) {
+    fn start_install(&mut self, ctx: &egui::Context) {
         self.phase = AppPhase::Installing;
         self.status_message = "Drivers installeren...".into();
         self.confirm_install = false;
         self.show_restart_prompt = false;
 
-        let update_ids = self.installable_update_ids();
+        let update_ids: Vec<String> = self.installable_ids.iter().cloned().collect();
         let tx = self.tx.clone();
+        let ctx = ctx.clone();
         thread::spawn(move || {
             let result = install_driver_updates(&update_ids).map_err(|e| e.to_string());
             let _ = tx.send(WorkerMsg::InstallDone(result));
+            ctx.request_repaint();
         });
-    }
-
-    fn installable_update_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        let mut seen = HashSet::new();
-        for device in &self.devices {
-            if device.status != DeviceStatus::UpdateAvailable {
-                continue;
-            }
-            if let Some(id) = &device.update_id {
-                if seen.insert(id.clone()) {
-                    ids.push(id.clone());
-                }
-            }
-        }
-        ids
-    }
-
-    fn installable_updates(&self) -> Vec<&DriverUpdate> {
-        let ids = self.installable_update_ids();
-        self.updates
-            .iter()
-            .filter(|u| ids.contains(&u.update_id))
-            .collect()
-    }
-
-    fn filtered_devices(&self) -> Vec<&DeviceDriver> {
-        self.devices
-            .iter()
-            .filter(|d| {
-                if self.show_only_updates && d.status != DeviceStatus::UpdateAvailable {
-                    return false;
-                }
-                if self.filter.is_empty() {
-                    return true;
-                }
-                let f = self.filter.to_lowercase();
-                d.name.to_lowercase().contains(&f)
-                    || d.manufacturer.to_lowercase().contains(&f)
-                    || d.device_class.to_lowercase().contains(&f)
-            })
-            .collect()
-    }
-
-    fn installable_updates_count(&self) -> usize {
-        self.installable_update_ids().len()
     }
 
     fn is_busy(&self) -> bool {
@@ -268,27 +258,29 @@ impl DriverUpdaterApp {
             });
         });
         ui.add_space(4.0);
-        ui.label(self.status_message.clone());
+        ui.label(&self.status_message);
         if let Some(err) = &self.error_message {
             ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
         }
     }
 
-    fn render_toolbar(&mut self, ui: &mut egui::Ui) {
+    fn render_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!self.is_busy(), egui::Button::new("Scannen"))
                 .clicked()
             {
-                self.start_scan();
+                self.start_scan(ctx);
             }
 
-            let updates = self.installable_updates_count();
             if ui
                 .add_enabled(
-                    !self.is_busy() && updates > 0,
-                    egui::Button::new(format!("Alle drivers updaten ({updates})"))
-                        .fill(egui::Color32::from_rgb(40, 120, 200)),
+                    !self.is_busy() && self.installable_count > 0,
+                    egui::Button::new(format!(
+                        "Alle drivers updaten ({})",
+                        self.installable_count
+                    ))
+                    .fill(egui::Color32::from_rgb(40, 120, 200)),
                 )
                 .clicked()
             {
@@ -307,73 +299,84 @@ impl DriverUpdaterApp {
     }
 
     fn render_device_list(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let devices = self.filtered_devices();
-            if devices.is_empty() {
-                ui.label("Geen onderdelen gevonden.");
-                return;
-            }
+        egui::ScrollArea::vertical()
+            .id_salt("device_list")
+            .show(ui, |ui| {
+                let mut visible = false;
+                let mut last_class: Option<&str> = None;
 
-            let mut last_class = String::new();
-            for device in devices {
-                if device.device_class != last_class {
-                    last_class = device.device_class.clone();
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(class_display_name(&device.device_class))
-                            .strong()
-                            .size(14.0),
-                    );
-                    ui.separator();
-                }
+                for device in &self.devices {
+                    if !self.device_visible(device) {
+                        continue;
+                    }
+                    visible = true;
 
-                ui.horizontal(|ui| {
-                    let (color, label) = status_badge(&device.status);
-                    ui.colored_label(color, label);
+                    if last_class != Some(device.device_class.as_str()) {
+                        last_class = Some(device.device_class.as_str());
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(class_display_name(&device.device_class))
+                                .strong()
+                                .size(14.0),
+                        );
+                        ui.separator();
+                    }
 
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(&device.name).strong());
-                        ui.horizontal(|ui| {
-                            if !device.manufacturer.is_empty() {
-                                ui.label(format!("Fabrikant: {}", device.manufacturer));
-                            }
-                            if !device.driver_version.is_empty() {
-                                ui.label(format!("Driver: v{}", device.driver_version));
-                            }
-                            if let Some(date) = device.driver_date {
-                                ui.label(format!("Datum: {}", date.format("%d-%m-%Y")));
-                            }
-                            if !device.inf_name.is_empty() {
-                                ui.label(format!("INF: {}", device.inf_name));
+                    ui.horizontal(|ui| {
+                        let (color, label) = status_badge(&device.status);
+                        ui.colored_label(color, label);
+
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(&device.name).strong());
+                            ui.horizontal(|ui| {
+                                if !device.manufacturer.is_empty() {
+                                    ui.label(format!("Fabrikant: {}", device.manufacturer));
+                                }
+                                if !device.driver_version.is_empty() {
+                                    ui.label(format!("Driver: v{}", device.driver_version));
+                                }
+                                if let Some(date) = device.driver_date {
+                                    ui.label(format!("Datum: {}", date.format("%d-%m-%Y")));
+                                }
+                                if !device.inf_name.is_empty() {
+                                    ui.label(format!("INF: {}", device.inf_name));
+                                }
+                            });
+                            if let Some(title) = &device.update_title {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(80, 180, 255),
+                                    format!("Update: {title}"),
+                                );
                             }
                         });
-                        if let Some(title) = &device.update_title {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(80, 180, 255),
-                                format!("Update: {title}"),
-                            );
-                        }
                     });
-                });
-                ui.add_space(4.0);
-            }
-        });
+                    ui.add_space(4.0);
+                }
+
+                if !visible {
+                    ui.label("Geen onderdelen gevonden.");
+                }
+            });
     }
 
     fn render_updates_panel(&mut self, ui: &mut egui::Ui) {
-        let installable = self.installable_updates();
-        if installable.is_empty() {
+        if self.installable_count == 0 {
             return;
         }
+
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new("Beschikbare updates voor jouw hardware")
                 .strong(),
         );
         egui::ScrollArea::vertical()
+            .id_salt("updates_panel")
             .max_height(120.0)
             .show(ui, |ui| {
-                for update in installable {
+                for update in &self.updates {
+                    if !self.installable_ids.contains(&update.update_id) {
+                        continue;
+                    }
                     ui.horizontal(|ui| {
                         ui.label(&update.title);
                         ui.label(format_size(update.size_bytes));
@@ -405,7 +408,7 @@ impl DriverUpdaterApp {
             .show(ctx, |ui| {
                 ui.label(format!(
                     "Wil je {} driver update(s) installeren via Windows Update?",
-                    self.installable_updates_count()
+                    self.installable_count
                 ));
                 ui.label(
                     "Dit kan enkele minuten duren. Na installatie moet je je PC herstarten om de drivers te activeren.",
@@ -419,7 +422,7 @@ impl DriverUpdaterApp {
                             let _ = request_elevation();
                             self.elevated = is_elevated();
                         }
-                        self.start_install();
+                        self.start_install(ctx);
                     }
                     if ui.button("Annuleren").clicked() {
                         self.confirm_install = false;
@@ -484,12 +487,13 @@ fn status_badge(status: &DeviceStatus) -> (egui::Color32, &str) {
 
 impl eframe::App for DriverUpdaterApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_worker();
+        self.sync_filter_cache();
+        self.poll_worker(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.render_header(ui);
             ui.separator();
-            self.render_toolbar(ui);
+            self.render_toolbar(ui, ctx);
             ui.separator();
             self.render_device_list(ui);
             self.render_updates_panel(ui);
@@ -498,9 +502,5 @@ impl eframe::App for DriverUpdaterApp {
 
         self.render_confirm_dialog(ctx);
         self.render_restart_dialog(ctx);
-
-        if self.is_busy() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        }
     }
 }
