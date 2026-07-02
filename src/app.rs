@@ -147,7 +147,7 @@ impl DriverUpdaterApp {
                                 result_code_label(r.result_code)
                             ));
                             if is_install_success(r.result_code) {
-                                successful_titles.insert(r.title.as_str());
+                                successful_titles.insert(r.title.clone());
                                 success_count += 1;
                             }
                         }
@@ -156,7 +156,7 @@ impl DriverUpdaterApp {
                             if device.status != DeviceStatus::UpdateAvailable {
                                 continue;
                             }
-                            let Some(title) = device.update_title.as_deref() else {
+                            let Some(title) = &device.update_title else {
                                 continue;
                             };
                             if successful_titles.contains(title) {
