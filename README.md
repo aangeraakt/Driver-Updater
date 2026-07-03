@@ -42,6 +42,14 @@ cargo --version
 
 Je zou iets moeten zien als `rustc 1.xx.x` en `cargo 1.xx.x`. Als beide commando's werken, kun je verder met [Installatie en starten](#installatie-en-starten).
 
+## Download
+
+Wil je niet zelf bouwen? Download de nieuwste `.exe` van de [GitHub Releases](https://github.com/aangeraakt/Driver-Updater/releases) pagina.
+
+1. Open **Releases** en kies de nieuwste versie
+2. Download `Rust-Driver-Updater-x.x.x.exe`
+3. Start het bestand (als administrator aanbevolen voor installatie)
+
 ## Installatie en starten
 
 Clone de repository en bouw het project:
