@@ -97,7 +97,7 @@ $ErrorActionPreference = 'Stop'
 $Session = New-Object -ComObject Microsoft.Update.Session
 $Searcher = $Session.CreateUpdateSearcher()
 $Searcher.Online = $true
-$Result = $Searcher.Search("{WU_DRIVER_QUERY}")
+$Result = $Searcher.Search('{WU_DRIVER_QUERY}')
 $updates = @()
 foreach ($Update in $Result.Updates) {{
     $updates += [PSCustomObject]@{{
@@ -132,7 +132,7 @@ foreach ($id in $TargetIds) {{ $TargetSet[$id] = $true }}
 $Session = New-Object -ComObject Microsoft.Update.Session
 $Searcher = $Session.CreateUpdateSearcher()
 $Searcher.Online = $true
-$Result = $Searcher.Search("{WU_DRIVER_QUERY}")
+$Result = $Searcher.Search('{WU_DRIVER_QUERY}')
 $ToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
 foreach ($Update in $Result.Updates) {{
     if ($TargetSet.ContainsKey($Update.Identity.UpdateID)) {{

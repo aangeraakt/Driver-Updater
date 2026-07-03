@@ -126,11 +126,11 @@ pub fn scan_devices() -> Result<Vec<DeviceDriver>> {
     let mut devices: Vec<DeviceDriver> = Vec::with_capacity(signed.len() + entity_map.len() / 4);
     devices.extend(signed.into_iter().filter_map(|d| build_device(d, &entity_map)));
 
-    let mut seen_ids: HashSet<String> = devices.iter().map(|d| d.device_id.clone()).collect();
+    let mut seen_ids: HashSet<&str> = devices.iter().map(|d| d.device_id.as_str()).collect();
 
     for entity in entity_map.values() {
         let id = entity.device_id.as_deref().unwrap_or("");
-        if id.is_empty() || !seen_ids.insert(id.to_string()) || should_skip_entity(entity) {
+        if id.is_empty() || !seen_ids.insert(id) || should_skip_entity(entity) {
             continue;
         }
 
