@@ -9,24 +9,6 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-struct Theme;
-
-impl Theme {
-    const BG: egui::Color32 = egui::Color32::from_rgb(22, 24, 30);
-    const PANEL: egui::Color32 = egui::Color32::from_rgb(30, 33, 42);
-    const CARD: egui::Color32 = egui::Color32::from_rgb(38, 42, 54);
-    const CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(44, 49, 64);
-    const ACCENT: egui::Color32 = egui::Color32::from_rgb(56, 132, 255);
-    const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(36, 88, 175);
-    const SUCCESS: egui::Color32 = egui::Color32::from_rgb(52, 199, 123);
-    const WARNING: egui::Color32 = egui::Color32::from_rgb(255, 184, 77);
-    const ERROR: egui::Color32 = egui::Color32::from_rgb(255, 95, 95);
-    const INFO: egui::Color32 = egui::Color32::from_rgb(92, 188, 255);
-    const MUTED: egui::Color32 = egui::Color32::from_rgb(150, 158, 178);
-    const TEXT: egui::Color32 = egui::Color32::from_rgb(230, 234, 242);
-    const BORDER: egui::Color32 = egui::Color32::from_rgb(55, 60, 74);
-}
-
 #[derive(PartialEq, Eq)]
 enum AppPhase {
     Idle,
@@ -41,13 +23,6 @@ enum WorkerMsg {
     ScanDone(Result<Vec<DeviceDriver>, String>),
     CheckDone(Result<Vec<DriverUpdate>, String>),
     InstallDone(Result<InstallSummary, String>),
-}
-
-struct DeviceStats {
-    total: usize,
-    up_to_date: usize,
-    updates: usize,
-    installed: usize,
 }
 
 pub struct DriverUpdaterApp {
@@ -71,8 +46,7 @@ pub struct DriverUpdaterApp {
 }
 
 impl DriverUpdaterApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        setup_theme(&cc.egui_ctx);
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
             phase: AppPhase::Idle,
@@ -84,7 +58,7 @@ impl DriverUpdaterApp {
             filter_lower: String::new(),
             filter_snapshot: String::new(),
             show_only_updates: false,
-            status_message: "Klik op 'Scannen' om je PC te analyseren.".into(),
+            status_message: "Klik op Scannen om je PC te analyseren.".into(),
             error_message: None,
             install_log: Vec::new(),
             confirm_install: false,
@@ -100,23 +74,6 @@ impl DriverUpdaterApp {
             self.filter_snapshot.clone_from(&self.filter);
             self.filter_lower = self.filter.to_lowercase();
         }
-    }
-
-    fn device_stats(&self) -> DeviceStats {
-        let mut stats = DeviceStats {
-            total: self.devices.len(),
-            up_to_date: 0,
-            updates: 0,
-            installed: 0,
-        };
-        for device in &self.devices {
-            match device.status {
-                DeviceStatus::UpToDate | DeviceStatus::Unknown => stats.up_to_date += 1,
-                DeviceStatus::UpdateAvailable => stats.updates += 1,
-                DeviceStatus::Installed => stats.installed += 1,
-            }
-        }
-        stats
     }
 
     fn device_visible(&self, device: &DeviceDriver) -> bool {
@@ -155,12 +112,12 @@ impl DriverUpdaterApp {
                         self.phase = AppPhase::Ready;
                         self.status_message = if self.installable_count == 0 {
                             format!(
-                                "{} onderdelen gescand — alle drivers zijn up-to-date.",
+                                "{} onderdelen — alle drivers up-to-date.",
                                 self.devices.len()
                             )
                         } else {
                             format!(
-                                "{} onderdelen gescand — {} driver update(s) beschikbaar.",
+                                "{} onderdelen — {} update(s) beschikbaar.",
                                 self.devices.len(),
                                 self.installable_count
                             )
@@ -170,7 +127,7 @@ impl DriverUpdaterApp {
                         self.phase = AppPhase::Ready;
                         self.error_message = Some(e);
                         self.status_message = format!(
-                            "{} onderdelen gescand — updatecontrole mislukt.",
+                            "{} onderdelen — updatecontrole mislukt.",
                             self.devices.len()
                         );
                     }
@@ -288,222 +245,69 @@ impl DriverUpdaterApp {
         )
     }
 
-    fn phase_label(&self) -> (&str, egui::Color32) {
-        match self.phase {
-            AppPhase::Idle => ("Klaar om te scannen", Theme::MUTED),
-            AppPhase::Scanning => ("Hardware scannen...", Theme::INFO),
-            AppPhase::Checking => ("Updates zoeken...", Theme::INFO),
-            AppPhase::Ready => ("Scan voltooid", Theme::SUCCESS),
-            AppPhase::Installing => ("Drivers installeren...", Theme::WARNING),
-            AppPhase::Done => ("Installatie voltooid", Theme::SUCCESS),
-        }
-    }
-
     fn render_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("Rust Driver Updater")
-                        .size(24.0)
-                        .strong()
-                        .color(Theme::TEXT),
-                );
-                ui.label(
-                    egui::RichText::new("Scan hardware, controleer drivers en installeer updates")
-                        .size(13.0)
-                        .color(Theme::MUTED),
-                );
-            });
-
+            ui.heading("Rust Driver Updater");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.elevated {
-                    badge(ui, "Administrator", Theme::SUCCESS);
-                } else {
-                    badge(ui, "Standaard gebruiker", Theme::WARNING);
+                if !self.elevated {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 180, 60),
+                        "Niet als administrator",
+                    );
                 }
             });
-        });
-    }
-
-    fn render_status_banner(&mut self, ui: &mut egui::Ui) {
-        let (phase_label, phase_color) = self.phase_label();
-        card_frame(Theme::CARD).show(ui, |ui| {
-            ui.set_min_height(52.0);
-            ui.horizontal(|ui| {
-                if self.is_busy() {
-                    ui.add(egui::Spinner::new().size(18.0));
-                } else {
-                    ui.label(egui::RichText::new("●").size(18.0).color(phase_color));
-                }
-
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(phase_label)
-                            .strong()
-                            .color(phase_color),
-                    );
-                    ui.label(
-                        egui::RichText::new(&self.status_message)
-                            .size(13.0)
-                            .color(Theme::TEXT),
-                    );
-                });
-            });
-
-            if let Some(err) = &self.error_message {
-                ui.add_space(6.0);
-                ui.colored_label(Theme::ERROR, err);
-            }
-        });
-    }
-
-    fn render_stats(&self, ui: &mut egui::Ui) {
-        let stats = self.device_stats();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            stat_card(ui, "Apparaten", stats.total, Theme::TEXT);
-            stat_card(ui, "Up-to-date", stats.up_to_date, Theme::SUCCESS);
-            stat_card(ui, "Updates", stats.updates, Theme::INFO);
-            stat_card(ui, "Geïnstalleerd", stats.installed, Theme::ACCENT);
         });
     }
 
     fn render_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        card_frame(Theme::PANEL).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let scan = egui::Button::new(
-                    egui::RichText::new("  Scannen  ").size(14.0).strong(),
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.is_busy(), egui::Button::new("Scannen"))
+                .clicked()
+            {
+                self.start_scan(ctx);
+            }
+
+            if ui
+                .add_enabled(
+                    !self.is_busy() && self.installable_count > 0,
+                    egui::Button::new(format!("Drivers updaten ({})", self.installable_count)),
                 )
-                .fill(if self.is_busy() {
-                    Theme::CARD
-                } else {
-                    Theme::ACCENT
-                })
-                .stroke(egui::Stroke::NONE);
+                .clicked()
+            {
+                self.confirm_install = true;
+            }
 
-                if ui.add_enabled(!self.is_busy(), scan).clicked() {
-                    self.start_scan(ctx);
-                }
+            ui.checkbox(&mut self.show_only_updates, "Alleen updates");
+        });
 
-                let update_label = if self.installable_count > 0 {
-                    format!("  Drivers updaten ({})  ", self.installable_count)
-                } else {
-                    "  Drivers updaten  ".into()
-                };
-                let update_btn = egui::Button::new(egui::RichText::new(update_label).size(14.0))
-                    .fill(Theme::ACCENT_DIM)
-                    .stroke(egui::Stroke::NONE);
-
-                if ui
-                    .add_enabled(!self.is_busy() && self.installable_count > 0, update_btn)
-                    .clicked()
-                {
-                    self.confirm_install = true;
-                }
-
-                ui.separator();
-
-                ui.checkbox(&mut self.show_only_updates, "Alleen updates");
-            });
-
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Zoeken").color(Theme::MUTED));
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.filter)
-                        .hint_text("Zoek op naam, fabrikant of categorie...")
-                        .desired_width(ui.available_width()),
-                );
-            });
+        ui.horizontal(|ui| {
+            ui.label("Zoeken:");
+            ui.text_edit_singleline(&mut self.filter);
         });
     }
 
-    fn render_main_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.devices.is_empty() && !self.is_busy() {
-            self.render_empty_state(ui, ctx);
-            return;
+    fn render_status(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if self.is_busy() {
+                ui.add(egui::Spinner::new());
+            }
+            ui.label(&self.status_message);
+        });
+        if let Some(err) = &self.error_message {
+            ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
         }
-
-        let sidebar_width = 300.0;
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_min_width(ui.available_width() - sidebar_width - 12.0);
-                ui.set_max_width(ui.available_width() - sidebar_width - 12.0);
-
-                ui.label(
-                    egui::RichText::new("Apparaten")
-                        .size(16.0)
-                        .strong()
-                        .color(Theme::TEXT),
-                );
-                ui.add_space(6.0);
-                self.render_device_list(ui);
-            });
-
-            ui.add_space(12.0);
-
-            ui.vertical(|ui| {
-                ui.set_min_width(sidebar_width);
-                ui.set_max_width(sidebar_width);
-                self.render_sidebar(ui);
-            });
-        });
-    }
-
-    fn render_empty_state(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.22);
-
-            card_frame(Theme::CARD).show(ui, |ui| {
-                ui.set_width(420.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("Welkom")
-                            .size(22.0)
-                            .strong()
-                            .color(Theme::TEXT),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Start een scan om alle hardware en driver updates op je PC te vinden.",
-                        )
-                        .color(Theme::MUTED),
-                    );
-                    ui.add_space(16.0);
-
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("  Start scan  ")
-                                    .size(15.0)
-                                    .strong()
-                                    .color(egui::Color32::WHITE),
-                            )
-                            .fill(Theme::ACCENT),
-                        )
-                        .clicked()
-                    {
-                        self.start_scan(ctx);
-                    }
-                });
-            });
-
-            ui.add_space(16.0);
-            ui.label(
-                egui::RichText::new("Windows Update wordt gebruikt om driver updates te vinden")
-                    .size(12.0)
-                    .color(Theme::MUTED),
-            );
-        });
     }
 
     fn render_device_list(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("device_list")
-            .auto_shrink([false, false])
             .show(ui, |ui| {
+                if self.devices.is_empty() && !self.is_busy() {
+                    ui.label("Nog geen scan uitgevoerd.");
+                    return;
+                }
+
                 let mut visible = false;
                 let mut last_class: Option<&str> = None;
 
@@ -515,105 +319,71 @@ impl DriverUpdaterApp {
 
                     if last_class != Some(device.device_class.as_str()) {
                         last_class = Some(device.device_class.as_str());
-                        ui.add_space(10.0);
-                        ui.label(
-                            egui::RichText::new(class_display_name(&device.device_class))
-                                .size(13.0)
-                                .strong()
-                                .color(Theme::MUTED),
-                        );
-                        ui.add_space(4.0);
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(class_display_name(&device.device_class)).strong());
+                        ui.separator();
                     }
 
-                    render_device_card(ui, device);
-                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let (color, label) = status_badge(&device.status);
+                        ui.colored_label(color, label);
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(&device.name).strong());
+                            let mut details = Vec::new();
+                            if !device.manufacturer.is_empty() {
+                                details.push(format!("Fabrikant: {}", device.manufacturer));
+                            }
+                            if !device.driver_version.is_empty() {
+                                details.push(format!("Driver: v{}", device.driver_version));
+                            }
+                            if let Some(date) = device.driver_date {
+                                details.push(format!("Datum: {}", date.format("%d-%m-%Y")));
+                            }
+                            if !details.is_empty() {
+                                ui.label(details.join("  ·  "));
+                            }
+                            if let Some(title) = &device.update_title {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(80, 180, 255),
+                                    format!("Update: {title}"),
+                                );
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
                 }
 
                 if !visible && !self.devices.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.label(
-                            egui::RichText::new("Geen apparaten gevonden voor dit filter")
-                                .color(Theme::MUTED),
-                        );
-                    });
+                    ui.label("Geen apparaten gevonden.");
                 }
             });
     }
 
-    fn render_sidebar(&mut self, ui: &mut egui::Ui) {
-        section_frame(ui, "Updates", |ui| {
-            if self.installable_count == 0 {
-                ui.label(
-                    egui::RichText::new("Geen updates beschikbaar")
-                        .color(Theme::MUTED)
-                        .italics(),
-                );
-                return;
+    fn render_updates_panel(&mut self, ui: &mut egui::Ui) {
+        if self.installable_count == 0 {
+            return;
+        }
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Updates").strong());
+        for update in &self.updates {
+            if !self.installable_ids.contains(&update.update_id) {
+                continue;
             }
-
-            egui::ScrollArea::vertical()
-                .id_salt("updates_panel")
-                .max_height(220.0)
-                .show(ui, |ui| {
-                    for update in &self.updates {
-                        if !self.installable_ids.contains(&update.update_id) {
-                            continue;
-                        }
-                        card_frame(Theme::BG).show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(&update.title)
-                                    .size(12.0)
-                                    .color(Theme::TEXT),
-                            );
-                            ui.label(
-                                egui::RichText::new(format_size(update.size_bytes))
-                                    .size(11.0)
-                                    .color(Theme::MUTED),
-                            );
-                        });
-                        ui.add_space(4.0);
-                    }
-                });
-        });
-
-        ui.add_space(10.0);
-
-        section_frame(ui, "Installatie log", |ui| {
-            if self.install_log.is_empty() {
-                ui.label(
-                    egui::RichText::new("Nog geen installaties uitgevoerd")
-                        .color(Theme::MUTED)
-                        .italics(),
-                );
-                return;
-            }
-
-            egui::ScrollArea::vertical()
-                .id_salt("install_log")
-                .max_height(180.0)
-                .show(ui, |ui| {
-                    for line in &self.install_log {
-                        ui.label(
-                            egui::RichText::new(line)
-                                .size(11.0)
-                                .color(Theme::TEXT),
-                        );
-                    }
-                });
-        });
-
-        if !self.elevated {
-            ui.add_space(10.0);
-            section_frame(ui, "Tip", |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Start als administrator voor betrouwbaardere driver installatie.",
-                    )
-                    .size(12.0)
-                    .color(Theme::WARNING),
-                );
+            ui.horizontal(|ui| {
+                ui.label(&update.title);
+                ui.label(format_size(update.size_bytes));
             });
+        }
+    }
+
+    fn render_install_log(&mut self, ui: &mut egui::Ui) {
+        if self.install_log.is_empty() {
+            return;
+        }
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Installatie log").strong());
+        for line in &self.install_log {
+            ui.label(line);
         }
     }
 
@@ -628,22 +398,13 @@ impl DriverUpdaterApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(format!(
-                    "Wil je {} driver update(s) installeren via Windows Update?",
+                    "Wil je {} driver update(s) installeren?",
                     self.installable_count
                 ));
-                ui.label(
-                    "Dit kan enkele minuten duren. Na installatie moet je je PC herstarten om de drivers te activeren.",
-                );
+                ui.label("Na installatie is een herstart nodig om drivers te activeren.");
                 ui.add_space(8.0);
-
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("Ja, installeer").strong())
-                                .fill(Theme::ACCENT),
-                        )
-                        .clicked()
-                    {
+                    if ui.button("Installeer").clicked() {
                         self.confirm_install = false;
                         if !self.elevated {
                             let _ = request_elevation();
@@ -668,22 +429,10 @@ impl DriverUpdaterApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(
-                    "De driver(s) zijn gedownload en geïnstalleerd, maar worden pas actief na een herstart van je PC.",
-                );
-                ui.label(
-                    "Start je computer opnieuw op om de nieuwe drivers te gebruiken.",
-                );
+                ui.label("De drivers zijn geïnstalleerd maar worden pas actief na een herstart.");
                 ui.add_space(8.0);
-
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("Herstart nu").strong())
-                                .fill(Theme::ACCENT),
-                        )
-                        .clicked()
-                    {
+                    if ui.button("Herstart nu").clicked() {
                         self.show_restart_prompt = false;
                         if !self.elevated {
                             let _ = request_elevation();
@@ -701,163 +450,14 @@ impl DriverUpdaterApp {
     }
 }
 
-fn setup_theme(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Theme::BG;
-    visuals.window_fill = Theme::PANEL;
-    visuals.extreme_bg_color = Theme::BG;
-    visuals.faint_bg_color = Theme::CARD;
-    visuals.widgets.noninteractive.bg_fill = Theme::CARD;
-    visuals.widgets.inactive.bg_fill = Theme::CARD;
-    visuals.widgets.hovered.bg_fill = Theme::CARD_HOVER;
-    visuals.widgets.active.bg_fill = Theme::ACCENT_DIM;
-    visuals.selection.bg_fill = Theme::ACCENT.linear_multiply(0.35);
-    visuals.widgets.noninteractive.fg_stroke.color = Theme::TEXT;
-    visuals.widgets.inactive.fg_stroke.color = Theme::TEXT;
-    visuals.widgets.hovered.fg_stroke.color = Theme::TEXT;
-    visuals.override_text_color = Some(Theme::TEXT);
-    visuals.window_corner_radius = egui::CornerRadius::same(10);
-    visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
-    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
-    visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
-    ctx.set_visuals(visuals);
-
-    ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        style.spacing.button_padding = egui::vec2(14.0, 8.0);
-        style.spacing.window_margin = egui::Margin::same(16);
-    });
-}
-
-fn card_frame(fill: egui::Color32) -> egui::Frame {
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(egui::Stroke::new(1.0, Theme::BORDER))
-        .corner_radius(10)
-        .inner_margin(14)
-}
-
-fn section_frame(ui: &mut egui::Ui, title: &str, add_body: impl FnOnce(&mut egui::Ui)) {
-    card_frame(Theme::PANEL).show(ui, |ui| {
-        ui.label(
-            egui::RichText::new(title)
-                .size(14.0)
-                .strong()
-                .color(Theme::TEXT),
-        );
-        ui.add_space(8.0);
-        add_body(ui);
-    });
-}
-
-fn stat_card(ui: &mut egui::Ui, label: &str, value: usize, color: egui::Color32) {
-    card_frame(Theme::CARD).show(ui, |ui| {
-        ui.set_min_width((ui.available_width() - 30.0) / 4.0);
-        ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new(label)
-                    .size(12.0)
-                    .color(Theme::MUTED),
-            );
-            ui.label(
-                egui::RichText::new(value.to_string())
-                    .size(22.0)
-                    .strong()
-                    .color(color),
-            );
-        });
-    });
-}
-
-fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
-    egui::Frame::new()
-        .fill(color.linear_multiply(0.18))
-        .stroke(egui::Stroke::new(1.0, color.linear_multiply(0.55)))
-        .corner_radius(20)
-        .inner_margin(egui::vec2(10.0, 4.0))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(12.0).color(color));
-        });
-}
-
-fn render_device_card(ui: &mut egui::Ui, device: &DeviceDriver) {
-    let (status_color, status_label) = status_badge(&device.status);
-
-    card_frame(Theme::CARD).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            egui::Frame::new()
-                .fill(status_color.linear_multiply(0.18))
-                .stroke(egui::Stroke::new(1.0, status_color.linear_multiply(0.5)))
-                .corner_radius(6)
-                .inner_margin(egui::vec2(8.0, 4.0))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(status_label)
-                            .size(11.0)
-                            .strong()
-                            .color(status_color),
-                    );
-                });
-
-            ui.add_space(8.0);
-
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(&device.name)
-                        .size(14.0)
-                        .strong()
-                        .color(Theme::TEXT),
-                );
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    if !device.manufacturer.is_empty() {
-                        detail_chip(ui, "Fabrikant", &device.manufacturer);
-                    }
-                    if !device.driver_version.is_empty() {
-                        detail_chip(ui, "Driver", &format!("v{}", device.driver_version));
-                    }
-                    if let Some(date) = device.driver_date {
-                        detail_chip(ui, "Datum", &date.format("%d-%m-%Y").to_string());
-                    }
-                    if !device.inf_name.is_empty() {
-                        detail_chip(ui, "INF", &device.inf_name);
-                    }
-                });
-
-                if let Some(title) = &device.update_title {
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(format!("Update: {title}"))
-                            .size(12.0)
-                            .color(Theme::INFO),
-                    );
-                }
-            });
-        });
-    });
-}
-
-fn detail_chip(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.label(
-        egui::RichText::new(format!("{label}: "))
-            .size(11.0)
-            .color(Theme::MUTED),
-    );
-    ui.label(
-        egui::RichText::new(value)
-            .size(11.0)
-            .color(Theme::TEXT),
-    );
-}
-
 fn status_badge(status: &DeviceStatus) -> (egui::Color32, &str) {
     match status {
-        DeviceStatus::Unknown => (Theme::MUTED, "Onbekend"),
-        DeviceStatus::UpToDate => (Theme::SUCCESS, "Up-to-date"),
-        DeviceStatus::UpdateAvailable => (Theme::INFO, "Update beschikbaar"),
-        DeviceStatus::Installed => (Theme::SUCCESS, "Geïnstalleerd"),
+        DeviceStatus::Unknown => (egui::Color32::GRAY, "Onbekend"),
+        DeviceStatus::UpToDate => (egui::Color32::from_rgb(80, 200, 120), "Up-to-date"),
+        DeviceStatus::UpdateAvailable => {
+            (egui::Color32::from_rgb(80, 180, 255), "Update beschikbaar")
+        }
+        DeviceStatus::Installed => (egui::Color32::from_rgb(80, 200, 120), "Geïnstalleerd"),
     }
 }
 
@@ -866,19 +466,17 @@ impl eframe::App for DriverUpdaterApp {
         self.sync_filter_cache();
         self.poll_worker(ctx);
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(Theme::BG).inner_margin(16))
-            .show(ctx, |ui| {
-                self.render_header(ui);
-                ui.add_space(12.0);
-                self.render_status_banner(ui);
-                ui.add_space(12.0);
-                self.render_stats(ui);
-                ui.add_space(12.0);
-                self.render_toolbar(ui, ctx);
-                ui.add_space(12.0);
-                self.render_main_content(ui, ctx);
-            });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.render_header(ui);
+            ui.separator();
+            self.render_toolbar(ui, ctx);
+            ui.separator();
+            self.render_status(ui);
+            ui.separator();
+            self.render_device_list(ui);
+            self.render_updates_panel(ui);
+            self.render_install_log(ui);
+        });
 
         self.render_confirm_dialog(ctx);
         self.render_restart_dialog(ctx);
