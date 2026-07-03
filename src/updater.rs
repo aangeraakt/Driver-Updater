@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::Deserializer;
 use std::collections::HashSet;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 const WU_DRIVER_QUERY: &str = "IsInstalled=0 and Type='Driver' and IsHidden=0";
@@ -200,12 +201,19 @@ fn parse_install_summary(json: &str) -> Result<InstallSummary> {
 }
 
 fn run_powershell(script: &str) -> Result<String> {
-    let child = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+    let mut child = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "-"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("PowerShell start mislukt")?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(script.as_bytes())
+            .context("PowerShell script schrijven mislukt")?;
+    }
 
     let output = child
         .wait_with_output()
