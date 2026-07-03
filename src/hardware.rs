@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::de::Deserializer;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wmi::{COMLibrary, WMIConnection};
 
 fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -50,9 +50,14 @@ pub struct DeviceDriver {
     pub driver_version: String,
     pub driver_date: Option<DateTime<Utc>>,
     pub hardware_ids: Vec<String>,
+    pub hardware_ids_upper: Vec<String>,
     pub inf_name: String,
     pub status: DeviceStatus,
     pub update_title: Option<String>,
+    pub update_id: Option<String>,
+    pub name_lower: String,
+    pub manufacturer_lower: String,
+    pub class_lower: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,30 +123,45 @@ pub fn scan_devices() -> Result<Vec<DeviceDriver>> {
         .filter_map(|e| e.device_id.clone().map(|id| (id, e)))
         .collect();
 
-    let mut devices: Vec<DeviceDriver> = signed
-        .into_iter()
-        .filter_map(|d| build_device(d, &entity_map))
-        .collect();
+    let mut devices: Vec<DeviceDriver> = Vec::with_capacity(signed.len() + entity_map.len() / 4);
+    devices.extend(signed.into_iter().filter_map(|d| build_device(d, &entity_map)));
+
+    let mut seen_ids: HashSet<String> = devices.iter().map(|d| d.device_id.clone()).collect();
 
     for entity in entity_map.values() {
         let id = entity.device_id.as_deref().unwrap_or("");
-        if devices.iter().any(|d| d.device_id == id) {
+        if id.is_empty() || !seen_ids.insert(id.to_string()) || should_skip_entity(entity) {
             continue;
         }
-        if should_skip_entity(entity) {
-            continue;
-        }
+
+        let name = entity
+            .name
+            .clone()
+            .unwrap_or_else(|| "Onbekend apparaat".into());
+        let manufacturer = entity.manufacturer.clone().unwrap_or_default();
+        let device_class = entity
+            .pnp_class
+            .clone()
+            .unwrap_or_else(|| "Overig".into());
+        let (name_lower, manufacturer_lower, class_lower) =
+            search_fields(&name, &manufacturer, &device_class);
+
         devices.push(DeviceDriver {
             device_id: id.to_string(),
-            name: entity.name.clone().unwrap_or_else(|| "Onbekend apparaat".into()),
-            manufacturer: entity.manufacturer.clone().unwrap_or_default(),
-            device_class: entity.pnp_class.clone().unwrap_or_else(|| "Overig".into()),
+            name,
+            manufacturer,
+            device_class,
             driver_version: String::new(),
             driver_date: None,
-            hardware_ids: vec![],
+            hardware_ids: Vec::new(),
+            hardware_ids_upper: Vec::new(),
             inf_name: String::new(),
             status: DeviceStatus::Unknown,
             update_title: None,
+            update_id: None,
+            name_lower,
+            manufacturer_lower,
+            class_lower,
         });
     }
 
@@ -183,6 +203,14 @@ fn build_device(d: PnPSignedDriver, entities: &HashMap<String, PnPEntity>) -> Op
         .or_else(|| entity.and_then(|e| e.pnp_class.clone()))
         .unwrap_or_else(|| "Overig".into());
 
+    let hardware_ids_upper: Vec<String> = d
+        .hardware_id
+        .iter()
+        .map(|id| id.to_uppercase())
+        .collect();
+    let (name_lower, manufacturer_lower, class_lower) =
+        search_fields(&name, &manufacturer, &device_class);
+
     Some(DeviceDriver {
         device_id,
         name,
@@ -191,10 +219,23 @@ fn build_device(d: PnPSignedDriver, entities: &HashMap<String, PnPEntity>) -> Op
         driver_version: d.driver_version.unwrap_or_default(),
         driver_date: parse_wmi_date(d.driver_date.as_deref()),
         hardware_ids: d.hardware_id,
+        hardware_ids_upper,
         inf_name: d.inf_name.unwrap_or_default(),
         status: DeviceStatus::Unknown,
         update_title: None,
+        update_id: None,
+        name_lower,
+        manufacturer_lower,
+        class_lower,
     })
+}
+
+fn search_fields(name: &str, manufacturer: &str, class: &str) -> (String, String, String) {
+    (
+        name.to_lowercase(),
+        manufacturer.to_lowercase(),
+        class.to_lowercase(),
+    )
 }
 
 fn should_skip_entity(entity: &PnPEntity) -> bool {
