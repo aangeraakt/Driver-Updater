@@ -1,0 +1,53 @@
+command /show:
+    executable by: players
+    cooldown: 1 second
+    cooldown message: &cWait a moment before using /show again.
+    trigger:
+        if {show::%uuid of player%} is true:
+            delete {show::%uuid of player%}
+            loop all players:
+                if loop-player is not player:
+                    send metadata packet with uuid "%uuid of loop-player%" invisible false, name visible true to player
+            send "&aPlayers are visible again."
+        else:
+            set {show::%uuid of player%} to true
+            loop all players:
+                if loop-player is not player:
+                    send metadata packet with uuid "%uuid of loop-player%" invisible true, name visible false to player
+            send "&7Other players are now hidden for you. They stay in TAB."
+
+function showApply(viewer: player, target: player, hidden: boolean):
+    {_target} is set
+    {_viewer} is set
+    {_target} is not {_viewer}
+    if {_hidden} is true:
+        send metadata packet with uuid "%uuid of {_target}%" invisible true, name visible false to {_viewer}
+    else:
+        send metadata packet with uuid "%uuid of {_target}%" invisible false, name visible true to {_viewer}
+
+every 10 ticks:
+    loop all players:
+        if {show::%uuid of loop-player-1%} is true:
+            loop all players in radius 64 around loop-player-1:
+                if loop-player-2 is not loop-player-1:
+                    showApply(loop-player-1, loop-player-2, true)
+
+on join:
+    wait 10 ticks
+    player is online
+    if {show::%uuid of player%} is true:
+        loop all players:
+            if loop-player is not player:
+                showApply(player, loop-player, true)
+    loop all players:
+        if loop-player is not player:
+            if {show::%uuid of loop-player%} is true:
+                showApply(loop-player, player, true)
+
+on teleport:
+    {show::%uuid of player%} is true
+    wait 5 ticks
+    player is online
+    loop all players in radius 64 around player:
+        if loop-player is not player:
+            showApply(player, loop-player, true)
